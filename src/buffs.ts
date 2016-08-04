@@ -1,26 +1,28 @@
 
+import { Character } from './characters';
 
-interface Attributes {
+export interface Attributes {
     hp: number; 
     strength: number;
     dexterity: number;
+    max_hp: number;
 }
-interface Damage {
+export interface Damage {
     type: "Damage";
     attribute: string; // enum or something in C#
     amount: number;
 }
-interface ApplyBuff {
+export interface ApplyBuff {
     type: "ApplyBuff";
     buff: Buff;
 }
-interface RemoveSelf {
+export interface RemoveSelf {
     type: "RemoveSelf";
 }
 
-type Action = Damage | ApplyBuff | RemoveSelf; // other ideas: "Resroration"
+export type Action = Damage | ApplyBuff | RemoveSelf; // other ideas: "Resroration"
 
-class Mutation {
+export class Mutation {
     attributes: Attributes;
     actions: Action[]
     constructor(attributes: Attributes, actions: Action[]) {
@@ -41,16 +43,18 @@ abstract class TimedBuff implements Buff {
     }
 }
 
-interface Buff {
+export interface Buff {
     // Called every stat calculation
     mutate?: (source: Attributes, target: Attributes, group: Buff[]) => Mutation;
 
     // Called every heartbeat (e.g. 60 times per second)
     handleHeartBeat: (source: Attributes, target: Attributes, beat: number, group: Buff[]) => Mutation;
+
+    uniqueName?: () => string;
 }
 
-class Bleed extends TimedBuff {
-    static base_bleed_dmg = 30;
+export class Bleed extends TimedBuff {
+    static base_bleed_dmg = .3;
 
     tick_table: number[];
     modifier: number;
@@ -86,7 +90,7 @@ class Bleed extends TimedBuff {
         
         // If the buff is determined to tick, apply health damage 
         if (this.tick_table.indexOf(beat) !== -1) {
-            let dmg: Damage = {type: "Damage", amount: this.calculate_dpt(target), attribute: "hp"};
+            let dmg: Damage = {type: "Damage", amount: this.calculate_dpt(source), attribute: "hp"};
             actions = actions.concat([dmg]);
         }
 
@@ -94,8 +98,8 @@ class Bleed extends TimedBuff {
     }
 }
 
-class Power extends TimedBuff {
-    static baseAmount: number = 1.2;
+export class Power extends TimedBuff {
+    static baseAmount: number = 1.5;
     amount: number;
 
     constructor(duration: number, amount: number = Power.baseAmount) {
@@ -104,35 +108,50 @@ class Power extends TimedBuff {
         this.duration = duration;
     }
 
-    mutate(target: Attributes): Mutation {
-        // this should be done immutably, but TypeScript sucks in that regard...
-        target.strength *= this.amount;
+    uniqueName(): string {
+        return "power"
+    }
+
+    mutate(source: Attributes, target: Attributes, group: Buff[]): Mutation {
+        // only apply this buff ONCE (stacks duration)
+        if(group && group[0] === this) {
+            target.strength *= this.amount;
+            target.dexterity *= this.amount;
+        }
         return new Mutation(target, []);
     }
 }
 
-interface Representation {
-    icon: string;
+export interface Representation {
+    name: string;
     count: number;
     remaining_beats: number;
-    total_beats: number;
 }
 
 class BuffState {
-    public beats: number;
-    public buff: Buff;
-    constructor(buff: Buff) {
+    beats: number;
+    buff: Buff;
+    source: Character;
+
+    constructor(buff: Buff, source: Character) {
         this.buff = buff;
         this.beats = 0;
+        this.source = source;
     }
-    handleHeartBeat(source: Attributes, target: Attributes, group: Buff[]): Mutation {
-        let mutation = this.buff.handleHeartBeat(source, target, this.beats, group);
+    handleHeartBeat(target: Attributes, group: Buff[]): Mutation {
+        let mutation = this.buff.handleHeartBeat(this.source.getAttributes(), target, this.beats, group);
         this.beats += 1;
         return mutation;
     }
+    mutate(target: Attributes, group: Buff[]): Mutation {
+        if(this.buff.mutate !== undefined)
+            return (this.buff as any).mutate(this.source.getBaseAttributes(), target, group);
+        return new Mutation(target, []);
+    }
     getExpiration(): number {
+        
         if(this.buff instanceof TimedBuff) {
-            return (this.buff as TimedBuff).duration
+            return (this.buff as TimedBuff).duration - this.beats;
         }
         return -1;
     }
@@ -141,7 +160,7 @@ class BuffState {
     }
 }
 
-abstract class BuffGroup {
+export abstract class BuffGroup {
     // decide whether this group accepts a given buff.
     abstract acceptBuff(buff: Buff): boolean;
     // get the order
@@ -149,18 +168,15 @@ abstract class BuffGroup {
 
     protected buffs: BuffState[];
 
-    constructor(buffs: Buff[] = []) {
+    constructor() {
         this.buffs = [];
-        for(let buff of buffs) {
-            this.addBuff(buff);
-        }
     }
     
-    handleHeartBeat(source: Attributes, target: Attributes): Mutation {
+    handleHeartBeat(target: Attributes): Mutation {
         let actions: Action[] = [];
         let buffedTarget: Attributes = target;
         for(let buffState of this.buffs) {
-            let result = buffState.handleHeartBeat(source, buffedTarget, this.buffs.map((b) => b.buff));
+            let result = buffState.handleHeartBeat(buffedTarget, this.buffs.map((b) => b.buff));
             for(let action of result.actions) {
                 if(action.type === "RemoveSelf")
                     this.removeBuff(buffState.buff);
@@ -172,11 +188,18 @@ abstract class BuffGroup {
         return new Mutation(buffedTarget, actions);
     }
 
+    mutate(target: Attributes): Attributes {
+        let buffedTarget: Attributes = target;
+        for(let buffState of this.buffs)
+            buffedTarget = buffState.mutate(buffedTarget, this.buffs.map((b) => b.buff)).attributes;
+        return buffedTarget;
+    }
+
     getBuffs() {
         return [...this.buffs];
     }
-    addBuff(buff: Buff): void {
-        this.buffs.push(new BuffState(buff));
+    addBuff(buff: Buff, source: Character): void {
+        this.buffs.push(new BuffState(buff, source));
     }
     removeBuff(buff: Buff): void {
         this.buffs = this.buffs.filter((buffState) => buff !== buffState.buff);
@@ -189,7 +212,7 @@ interface Representable {
 }
 
 // Misc Group - applied after everything else
-class MiscBuffGroup extends BuffGroup {
+export class MiscBuffGroup extends BuffGroup {
     getOrder() {
         return 999999999;
     }
@@ -200,9 +223,9 @@ class MiscBuffGroup extends BuffGroup {
 
     getRepresentations(): Representation[] {
         let representations: Representation[] = [];
-        for(let buff of this.buffs) {
-            if(((buff as any).getRepresentation || undefined) !== undefined ) {
-                representations.push(((buff as any) as Representable).getRepresentation());
+        for(let buffState of this.buffs) {
+            if(((buffState.buff as any).getRepresentation || undefined) !== undefined ) {
+                representations.push(((buffState.buff as any) as Representable).getRepresentation());
             }
         }
         return representations;
@@ -210,8 +233,7 @@ class MiscBuffGroup extends BuffGroup {
 }
 
 
-
-class BleedGroup extends BuffGroup {
+export class BleedGroup extends BuffGroup {
     // stolen for demonstration purposes
     static img: string = "https://wiki.guildwars2.com/images/4/4f/Bleeding_40px.png";
 
@@ -224,13 +246,27 @@ class BleedGroup extends BuffGroup {
     }
 
     getRepresentations(): Representation[] {
-        let total_beats = 10;
-        let current_beats = this.buffs.reduce((agg, buff) => Math.max(agg, buff.duration), 0);
         return this.buffs.length > 0 ? [{
-            icon: BleedGroup.img,
+            name: "bleed",
             count: this.buffs.length,
-            remaining_beats: total_beats - current_beats,
-            total_beats: total_beats,
+            remaining_beats: this.buffs.reduce((agg, buff) => Math.max(agg, buff.getExpiration()), 0),
+        }] : [];
+    }
+}
+
+export class PowerGroup extends BuffGroup {
+    acceptBuff(b: Buff): boolean {
+        return (b instanceof Power);
+    }
+
+    getOrder() {
+        return 10;
+    }
+    getRepresentations(): Representation[] {
+        return this.buffs.length > 0 ? [{
+            name: "power",
+            count: -1,
+            remaining_beats: this.buffs.reduce((agg, buff) => agg + buff.getExpiration(), 0),
         }] : [];
     }
 }

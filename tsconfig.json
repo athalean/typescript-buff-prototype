@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "outDir": "./dist",
+    "sourceMap": true,
+    "module": "commonjs",
+    "target": "es5"
+  },
+  "files": [
+    "src/buffs.ts",
+    "src/characters.ts",
+    "src/main.ts"
+  ]
+}
