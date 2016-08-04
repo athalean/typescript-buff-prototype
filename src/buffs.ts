@@ -19,8 +19,11 @@ export interface ApplyBuff {
 export interface RemoveSelf {
     type: "RemoveSelf";
 }
+export interface SkipBeat {
+    type: "SkipBeat";
+}
 
-export type Action = Damage | ApplyBuff | RemoveSelf; // other ideas: "Resroration"
+export type Action = Damage | ApplyBuff | RemoveSelf | SkipBeat; // other ideas: "Resroration"
 
 export class Mutation {
     attributes: Attributes;
@@ -120,6 +123,12 @@ export class Power extends TimedBuff {
         }
         return new Mutation(target, []);
     }
+
+    handleHeartBeat(source: Attributes, target: Attributes, beat: number, group: Buff[]): Mutation {
+        if(group && group[0] !== this)
+            return new Mutation(target, [{type: "SkipBeat"}]);
+        return new Mutation(target, []);
+    }
 }
 
 export interface Representation {
@@ -140,8 +149,16 @@ class BuffState {
     }
     handleHeartBeat(target: Attributes, group: Buff[]): Mutation {
         let mutation = this.buff.handleHeartBeat(this.source.getAttributes(), target, this.beats, group);
-        this.beats += 1;
-        return mutation;
+        let actions: Action[] = [];
+        let skipping = false;
+
+        for(let action of mutation.actions) {
+            actions.push(action);
+            skipping = skipping || action.type === "SkipBeat";
+        }
+            
+        this.beats += (skipping) ? 0 : 1;
+        return new Mutation(mutation.attributes, actions);
     }
     mutate(target: Attributes, group: Buff[]): Mutation {
         if(this.buff.mutate !== undefined)
